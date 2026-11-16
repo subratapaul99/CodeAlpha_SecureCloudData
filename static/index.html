@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secure Cloud Data System</title>
+<style>
+  :root{--bg:#f3f4f6;--card:#fff;--text:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;
+        --ok-bg:#dcfce7;--ok:#166534;--warn-bg:#ffedd5;--warn:#9a3412;--bad-bg:#fee2e2;--bad:#991b1b}
+  @media (prefers-color-scheme:dark){:root{--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;
+        --ok-bg:#14532d;--ok:#bbf7d0;--warn-bg:#7c2d12;--warn:#fed7aa;--bad-bg:#7f1d1d;--bad:#fecaca}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text)}
+  header{background:#0f172a;color:#fff;padding:18px 24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+  header h1{margin:0;font-size:1.15rem} header small{color:#94a3b8;display:block;font-weight:400}
+  main{max-width:960px;margin:24px auto;padding:0 16px;display:grid;gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px}
+  h2{margin:0 0 12px;font-size:1.05rem}
+  label{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
+  input{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;background:var(--card);color:var(--text)}
+  button{padding:10px 16px;border:0;border-radius:8px;background:var(--blue);color:#fff;font-weight:600;cursor:pointer;font-size:.9rem}
+  button.ghost{background:transparent;color:var(--blue);border:1px solid var(--blue)}
+  .row{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+  .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+  .banner{padding:10px 14px;border-radius:8px;font-size:.9rem;margin-top:12px;display:none}
+  .banner.show{display:block}
+  .ok{background:var(--ok-bg);color:var(--ok)} .warn{background:var(--warn-bg);color:var(--warn)} .bad{background:var(--bad-bg);color:var(--bad)}
+  .scroll{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:.85rem}
+  th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--muted);font-weight:600}
+  .tag{padding:2px 8px;border-radius:999px;font-size:.75rem;font-weight:600}
+  .hint{font-size:.8rem;color:var(--muted);margin-top:10px}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Secure Cloud Data System<small>Redundancy removal + SQL-injection protection (AES-256, capability tokens)</small></h1>
+  <div id="who" class="hidden"><span id="whoName"></span> <button class="ghost" id="logout" style="margin-left:8px;color:#fff;border-color:#64748b">Log out</button></div>
+</header>
+
+<main>
+  <section class="card" id="authCard">
+    <h2>Sign in</h2>
+    <label for="u">Username</label><input id="u" autocomplete="username">
+    <label for="p">Password (min 8 characters)</label><input id="p" type="password" autocomplete="current-password">
+    <div class="row"><button id="login">Log in</button><button class="ghost" id="register">Register</button></div>
+    <div id="authMsg" class="banner"></div>
+    <p class="hint">Logging in returns a capability token (valid 15 minutes). It is kept in memory only and sent with every data request.</p>
+  </section>
+
+  <div id="app" class="hidden">
+    <div class="grid">
+      <section class="card">
+        <h2>Add a record</h2>
+        <label for="n">Name</label><input id="n" placeholder="John Doe">
+        <label for="e">Email</label><input id="e" placeholder="john@mail.com">
+        <label for="ph">Phone</label><input id="ph" placeholder="+91 98765 43210">
+        <div class="row"><button id="add">Validate &amp; store</button></div>
+        <div id="recMsg" class="banner"></div>
+        <p class="hint">Try the same person twice (different spacing or case), or a name like <code>Robert'); DROP TABLE records;--</code></p>
+      </section>
+      <section class="card">
+        <h2>Rejected entries log</h2>
+        <div class="scroll"><table><thead><tr><th>Type</th><th>Reason</th><th>Time</th></tr></thead><tbody id="rej"></tbody></table></div>
+      </section>
+    </div>
+    <section class="card" style="margin-top:16px">
+      <h2>Stored records <span style="color:var(--muted);font-weight:400;font-size:.85rem">(encrypted in the database, decrypted for you via your token)</span></h2>
+      <div class="scroll"><table><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th></tr></thead><tbody id="recs"></tbody></table></div>
+    </section>
+  </div>
+</main>
+
+<script>
+  var token = null;
+  var $ = function (id) { return document.getElementById(id); };
+
+  function banner(el, kind, text) { el.className = "banner show " + kind; el.textContent = text; }
+
+  function api(path, method, body) {
+    var headers = {"Content-Type": "application/json"};
+    if (token) headers["X-Capability"] = token;
+    return fetch(path, {method: method, headers: headers, body: body ? JSON.stringify(body) : undefined})
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return {status: r.status, data: d}; }); });
+  }
+
+  function detailText(d) {
+    if (!d || !d.detail) return "Something went wrong";
+    if (typeof d.detail === "string") return d.detail;
+    if (Array.isArray(d.detail)) return d.detail.map(function (x) { return x.msg; }).join("; ");
+    return (d.detail.classification || "") + ": " + (d.detail.reason || "");
+  }
+
+  function cell(tr, text) { var td = document.createElement("td"); td.textContent = text; tr.appendChild(td); return td; }
+
+  function sessionExpired() {
+    token = null; $("app").classList.add("hidden"); $("who").classList.add("hidden");
+    $("authCard").classList.remove("hidden");
+    banner($("authMsg"), "warn", "Session expired. Please log in again.");
+  }
+
+  function refresh() {
+    api("/records", "GET").then(function (r) {
+      if (r.status === 401) return sessionExpired();
+      var tb = $("recs"); tb.textContent = "";
+      (r.data || []).forEach(function (x) {
+        var tr = document.createElement("tr");
+        cell(tr, x.id); cell(tr, x.name); cell(tr, x.email); cell(tr, x.phone); tb.appendChild(tr);
+      });
+    });
+    api("/rejected", "GET").then(function (r) {
+      if (r.status !== 200) return;
+      var tb = $("rej"); tb.textContent = "";
+      r.data.forEach(function (x) {
+        var tr = document.createElement("tr");
+        var t = cell(tr, ""); var s = document.createElement("span");
+        s.className = "tag " + (x.classification === "redundant" ? "warn" : "bad"); s.textContent = x.classification; t.appendChild(s);
+        cell(tr, x.reason); cell(tr, x.at); tb.appendChild(tr);
+      });
+    });
+  }
+
+  $("register").onclick = function () {
+    api("/register", "POST", {username: $("u").value.trim(), password: $("p").value}).then(function (r) {
+      banner($("authMsg"), r.status === 201 ? "ok" : "bad", r.status === 201 ? "Registered. Now click Log in." : detailText(r.data));
+    });
+  };
+
+  $("login").onclick = function () {
+    var name = $("u").value.trim();
+    api("/login", "POST", {username: name, password: $("p").value}).then(function (r) {
+      if (r.status !== 200) return banner($("authMsg"), "bad", detailText(r.data));
+      token = r.data.capability_token; $("p").value = "";
+      $("authCard").classList.add("hidden"); $("app").classList.remove("hidden");
+      $("who").classList.remove("hidden"); $("whoName").textContent = "Signed in as " + name;
+      refresh();
+    });
+  };
+
+  $("logout").onclick = function () { token = null; location.reload(); };
+
+  $("add").onclick = function () {
+    api("/records", "POST", {name: $("n").value, email: $("e").value, phone: $("ph").value}).then(function (r) {
+      var box = $("recMsg");
+      if (r.status === 401) return sessionExpired();
+      if (r.status === 201) { banner(box, "ok", "Stored: unique, verified record added."); $("n").value = $("e").value = $("ph").value = ""; }
+      else if (r.status === 409) banner(box, "warn", "Redundant: this record already exists, so it was not added.");
+      else if (r.status === 422) banner(box, "bad", "Blocked (false positive): " + (r.data.detail && r.data.detail.reason || detailText(r.data)));
+      else banner(box, "bad", detailText(r.data));
+      refresh();
+    });
+  };
+</script>
+</body>
+</html>

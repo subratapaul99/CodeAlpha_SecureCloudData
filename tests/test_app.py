@@ -62,3 +62,29 @@ def test_data_encrypted_at_rest():
 def test_frontend_served():
     r = client.get("/")
     assert r.status_code == 200 and "Secure Cloud Data System" in r.text
+
+
+def test_stats_and_delete():
+    h = _token()
+    client.post("/records", json={"name": "Del Me", "email": "del@mail.com", "phone": "5551234567"}, headers=h)
+    st = client.get("/stats", headers=h).json()
+    assert st["stored"] >= 1 and st["false_positive"] >= 1
+    rid = [x for x in client.get("/records", headers=h).json() if x["name"] == "Del Me"][0]["id"]
+    assert client.delete(f"/records/{rid}", headers=h).status_code == 200
+    assert client.delete(f"/records/{rid}", headers=h).status_code == 404
+
+
+def test_login_lockout():
+    client.post("/register", json={"username": "bob", "password": "BobPass1234"})
+    for _ in range(5):
+        assert client.post("/login", json={"username": "bob", "password": "wrong-pass"}).status_code == 401
+    assert client.post("/login", json={"username": "bob", "password": "BobPass1234"}).status_code == 429
+
+
+def test_sample_csv_import():
+    import csv
+    h = _token()
+    out = {201: 0, 409: 0, 422: 0}
+    for row in csv.DictReader(open("sample_data.csv", encoding="utf-8")):
+        out[client.post("/records", json=row, headers=h).status_code] += 1
+    assert out == {201: 3, 409: 2, 422: 2}, out

@@ -63,3 +63,9 @@ Set the three variables in the same terminal before starting the server. Open ht
 2. EC2 t3.micro: `git clone`, `pip install -r requirements.txt`, set env vars, then
    `uvicorn app.main:app --host 0.0.0.0 --port 8000` (add systemd + nginx/HTTPS for production).
 3. Store `AES_KEY` and `CAPABILITY_SECRET` in AWS Secrets Manager.
+
+## Features added in v2
+- **Live dashboard:** stored / duplicates blocked / attacks blocked / rejection rate (`GET /stats`).
+- **Bulk CSV import** with per-row validation and a summary (try `sample_data.csv`: 3 stored, 2 duplicates, 2 blocked).
+- **Search, delete (`DELETE /records/{id}`) and CSV export** of stored records.
+- **Brute-force protection:** 5 failed logins lock that username for 5 minutes (HTTP 429).

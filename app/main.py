@@ -1,10 +1,12 @@
 import re
+import time
+from collections import defaultdict
 from pathlib import Path
 from fastapi import FastAPI, Depends, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import select, insert
+from sqlalchemy import select, insert, delete, func
 from sqlalchemy.exc import IntegrityError
 
 from . import db, security, validation
@@ -41,6 +43,17 @@ def _log_rejection(conn, fp, classification, reason):
         fingerprint=fp, classification=classification, reason=reason))
 
 
+# ---------- brute-force protection (Task 2 extra layer) ----------
+FAILS = defaultdict(list)
+MAX_FAILS, WINDOW = 5, 300
+
+
+def _locked(username: str) -> bool:
+    now = time.time()
+    FAILS[username] = [t for t in FAILS[username] if now - t < WINDOW]
+    return len(FAILS[username]) >= MAX_FAILS
+
+
 # ---------- auth ----------
 @app.post("/register", status_code=201)
 def register(c: Credentials):
@@ -57,10 +70,14 @@ def register(c: Credentials):
 
 @app.post("/login")
 def login(c: Credentials):
+    if _locked(c.username):
+        raise HTTPException(429, "Too many failed attempts. Try again in 5 minutes.")
     with db.engine.connect() as conn:
         row = conn.execute(select(db.users).where(db.users.c.username == c.username)).first()
     if not row or not security.verify_password(c.password, row.password_hash):
+        FAILS[c.username].append(time.time())
         raise HTTPException(401, "Invalid credentials")
+    FAILS.pop(c.username, None)
     token = security.issue_capability(c.username, ["read", "write"], ttl=900)
     return {"capability_token": token, "expires_in": 900}
 
@@ -114,6 +131,25 @@ def list_rejected(_=Depends(require("read"))):
             select(db.rejected).order_by(db.rejected.c.id.desc()).limit(100)).all()
     return [{"classification": r.classification, "reason": r.reason,
              "at": str(r.created_at)} for r in rows]
+
+
+@app.get("/stats")
+def stats(_=Depends(require("read"))):
+    with db.engine.connect() as conn:
+        stored = conn.execute(select(func.count()).select_from(db.records)).scalar()
+        counts = dict(conn.execute(
+            select(db.rejected.c.classification, func.count()).group_by(db.rejected.c.classification)).all())
+    return {"stored": stored, "redundant": counts.get("redundant", 0),
+            "false_positive": counts.get("false_positive", 0)}
+
+
+@app.delete("/records/{rid}")
+def delete_record(rid: int, _=Depends(require("write"))):
+    with db.engine.begin() as conn:
+        res = conn.execute(delete(db.records).where(db.records.c.id == rid))
+    if res.rowcount == 0:
+        raise HTTPException(404, "Record not found")
+    return {"message": "deleted"}
 
 
 @app.get("/health")
